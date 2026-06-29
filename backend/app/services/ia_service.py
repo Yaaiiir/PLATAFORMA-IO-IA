@@ -1,76 +1,92 @@
 import httpx
-from app.models.schemas import TransportInput
+from typing import Union
+from app.models.schemas import SimplexInput, GraphicInput, TransportInput
 
 class IAService:
     def __init__(self, model_name: str = "llama3", ollama_url: str = "http://localhost:11434"):
         self.model_name = model_name
         self.ollama_url = f"{ollama_url}/api/generate"
 
-    def generate_interpretation(self, payload: TransportInput, solution: dict) -> str:
-        """
-        Genera un análisis experto utilizando el modelo local de Ollama de forma optimizada.
-        """
-        # Mapeo de siglas a nombres elegantes para el reporte de la IA
-        method_names = {
-            "NRE": "Método de la Esquina Noroeste",
-            "MCM": "Método del Costo Mínimo",
-            "VOGEL": "Método de Aproximación de Vogel"
-        }
-        friendly_method = method_names.get(solution.get("method_used"), "Optimización General")
-        
-        # Recuperar de forma segura el valor objetivo para el formateo
-        obj_value = solution.get("objective_value", 0)
-        formatted_cost = f"{obj_value:,}" if obj_value is not None else "0"
-
-        # 1. Diseñar un prompt sumamente descriptivo
-        prompt = f"""
-        Actúa como un Consultor Experto en Inteligencia de Negocios y Optimización Logística. 
-        Analiza el siguiente problema de Investigación de Operaciones resuelto por nuestro sistema:
-
-        --- CONTEXTO DEL PROBLEMA ---
-        - Orígenes disponibles: {payload.origins_names} con capacidades respectivas de {payload.supply} unidades.
-        - Destinos/Clientes: {payload.destinations_names} con demandas respectivas de {payload.demand} unidades.
-        - Matriz de Costos Unitarios: {payload.costs_matrix} (donde la fila i representa el origen y la columna j el destino).
-
-        --- SOLUCIÓN OBTENIDA ---
-        - Heurística utilizada: {friendly_method} ({solution.get('method_used')}).
-        - Costo Total de Distribución Calculado: ${formatted_cost} MXN.
-        - Detalle de la Asignación: {solution.get('variables')}
-
-        --- INSTRUCCIONES DE RESPUESTA ---
-        Escribe un informe de análisis ejecutivo resumido, claro y profesional orientado a la toma de decisiones. Debes estructurarlo usando los siguientes puntos en Markdown:
-        1. **Resumen Ejecutivo**: Explica de manera sencilla qué significa este costo de ${formatted_cost} MXN para la operación.
-        2. **Análisis del Algoritmo Seleccionado**: Menciona brevemente si el método utilizado ({friendly_method}) suele ser el más óptimo o si es una aproximación inicial (por ejemplo, si usó Esquina Noroeste, advierte que no considera los costos y que podría haber una mejor opción; si usó Vogel, destaca que suele ser excelente).
-        3. **Rutas Críticas / Recomendaciones**: Identifica qué rutas de distribución absorbieron más flujo y da 1 o 2 recomendaciones lógicas para mejorar los costos logísticos de la empresa basados en la matriz.
-
-        Responde directamente con el análisis en español, usa un tono profesional pero accesible y de forma concisa para acelerar el procesamiento. Evita notas de sistema.
-        """
-
-        # 2. Configurar el JSON de petición optimizado para evitar cuellos de botella
+    def _call_ollama(self, prompt: str) -> str:
+        """Método privado para centralizar las peticiones HTTP a Ollama"""
         json_payload = {
             "model": self.model_name,
             "prompt": prompt,
-            "stream": False,  # False para recibir la respuesta de un solo golpe
+            "stream": False,
             "options": {
-                "temperature": 0.5,     # Reducido ligeramente para mayor consistencia y velocidad
-                "num_predict": 300,     # Reducido para acortar el tiempo de redacción de tokens masivos
-                "num_thread": 4         # Fuerza a usar hilos de procesamiento en paralelo (CPU)
+                "temperature": 0.5,
+                "num_predict": 300,
+                "num_thread": 4
             }
         }
-
-        # 3. Hacer la llamada HTTP sincrónica hacia Ollama con timeout extendido a 90 segundos
         try:
             with httpx.Client(timeout=90.0) as client:
                 response = client.post(self.ollama_url, json=json_payload)
                 response.raise_for_status()
-                
-                # Ollama por defecto responde con un JSON que contiene la clave "response"
-                result_json = response.json()
-                return result_json.get("response", "No se recibió una interpretación válida del modelo de lenguaje.")
-                
+                return response.json().get("response", "No se recibió una interpretación válida.")
         except httpx.ConnectError:
-            raise Exception("No se pudo conectar con Ollama. Verifica que el servicio esté corriendo en http://localhost:11434")
-        except httpx.HTTPStatusError as e:
-            raise Exception(f"Error en el servidor de Ollama (Status: {e.response.status_code})")
+            raise Exception("No se pudo conectar con Ollama. Verifica que esté corriendo en localhost:11434")
         except Exception as e:
-            raise Exception(f"Error inesperado al generar la interpretación de IA: {str(e)}")
+            raise Exception(f"Error en Ollama: {str(e)}")
+
+    def generate_interpretation(self, payload: Union[SimplexInput, GraphicInput, TransportInput], solution: dict) -> str:
+        """
+        Detecta automáticamente el tipo de problema y genera el análisis correspondiente.
+        """
+        # CASO 1: PROBLEMAS DE TRANSPORTE
+        if hasattr(payload, 'origins_names'):
+            method_names = {
+                "NRE": "Método de la Esquina Noroeste",
+                "MCM": "Método del Costo Mínimo",
+                "VOGEL": "Método de Aproximación de Vogel"
+            }
+            friendly_method = method_names.get(solution.get("method_used"), "Optimización de Transporte")
+            obj_value = solution.get("objective_value", 0)
+            formatted_cost = f"{obj_value:,}" if obj_value is not None else "0"
+
+            prompt = f"""
+            Actúa como un Consultor Experto en Optimización Logística.
+            Analiza el siguiente problema de Transporte:
+
+            --- CONTEXTO ---
+            - Orígenes: {payload.origins_names} con capacidades {payload.supply}.
+            - Destinos: {payload.destinations_names} con demandas {payload.demand}.
+            - Matriz Costos: {payload.costs_matrix}
+
+            --- SOLUCIÓN ---
+            - Heurística: {friendly_method}.
+            - Costo Total: ${formatted_cost} MXN.
+            - Asignación: {solution.get('variables')}
+
+            Escribe en español un informe usando:
+            1. **Resumen Ejecutivo**: Qué significa este costo de ${formatted_cost} MXN.
+            2. **Análisis del Algoritmo**: Evaluación corta del método ({friendly_method}).
+            3. **Rutas Críticas**: Qué rutas absorbieron más flujo y sugerencia de mejora.
+            """
+            return self._call_ollama(prompt)
+
+        # CASO 2: SIMPLEX O MÉTODO GRÁFICO (Optimización Lineal Tradicional)
+        else:
+            tipo_metodo = "Método Gráfico (2 Variables)" if len(payload.objective_coefficients) == 2 else "Método Simplex General"
+            obj_type = "Maximizar" if payload.objective_type == "MAX" else "Minimizar"
+            obj_value = solution.get("objective_value", 0)
+            
+            prompt = f"""
+            Actúa como un Consultor Experto en Investigación de Operaciones.
+            Analiza el siguiente modelo de programación lineal resuelto:
+
+            --- CONFIGURACIÓN DEL MODELO ---
+            - Objetivo: {obj_type} la función con coeficientes {payload.objective_coefficients}.
+            - Restricciones: {[{'coef': c.coefficients, 'sign': c.sign, 'rhs': c.rhs} for c in payload.constraints]}
+
+            --- RESULTADOS ---
+            - Método empleado: {tipo_metodo}.
+            - Valor Óptimo de Z (Función Objetivo): {obj_value}
+            - Valores de las Variables de Decisión: {solution.get('variables')}
+
+            Escribe en español un análisis ejecutivo rápido usando:
+            1. **Interpretación del Óptimo**: Explica el rendimiento máximo/mínimo alcanzado ({obj_value}).
+            2. **Uso de Recursos**: Analiza cómo impactan las restricciones según las variables finales.
+            3. **Recomendación Operativa**: Qué decisión estratégica debe tomar el negocio con estos números.
+            """
+            return self._call_ollama(prompt)

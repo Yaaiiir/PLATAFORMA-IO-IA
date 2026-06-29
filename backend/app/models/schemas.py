@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import List, Literal
 
 class Constraint(BaseModel):
@@ -17,13 +17,16 @@ class SimplexInput(IOInputBase):
 
 # Schema específico para el Método Gráfico (Estrictamente limitado a 2 variables)
 class GraphicInput(IOInputBase):
-    def validate_variables(self):
+    
+    @model_validator(mode="after")
+    def validate_variables(self) -> "GraphicInput":
         if len(self.objective_coefficients) != 2:
             raise ValueError("El método gráfico requiere estrictamente 2 variables de decisión.")
         for c in self.constraints:
             if len(c.coefficients) != 2:
                 raise ValueError("Todas las restricciones en el método gráfico deben tener 2 coeficientes.")
-            
+        return self
+
 class TransportInput(BaseModel):
     origins_names: List[str] = Field(..., description="Nombres de los puntos de origen. Ej: ['Fábrica A', 'Fábrica B']")
     destinations_names: List[str] = Field(..., description="Nombres de los puntos de destino. Ej: ['Cliente 1', 'Cliente 2', 'Cliente 3']")
@@ -31,3 +34,8 @@ class TransportInput(BaseModel):
     supply: List[float] = Field(..., description="Vector de capacidades de oferta de cada origen")
     demand: List[float] = Field(..., description="Vector de requerimientos de demanda de cada destino")
     method: Literal["NRE", "MCM", "VOGEL"] = Field(..., description="Método de aproximación inicial a utilizar: NRE (Esquina Noroeste), MCM (Costo Mínimo), VOGEL (Aproximación de Vogel)")
+
+# --- NUEVO: Schema para el Asistente de IA (Chat Flotante) ---
+class ChatMessageInput(BaseModel):
+    message: str = Field(..., description="Pregunta o mensaje que el usuario envía al chat.")
+    context_data: dict = Field(default={}, description="Datos opcionales del problema de IO resuelto para alimentar el contexto de la IA.")

@@ -2,31 +2,33 @@ from fastapi import APIRouter, HTTPException
 from app.models.schemas import SimplexInput
 from app.services.solver_engine import solve_simplex
 from app.services.ia_service import IAService
+import traceback
 
 router = APIRouter(
     prefix="/simplex",
     tags=["Método Simplex"]
 )
 
-# Inicializamos el servicio de IA apuntando al modelo local (por defecto llama3)
 ia_service = IAService(model_name="llama3", ollama_url="http://localhost:11434")
 
 @router.post("/solve")
 def solve_simplex_problem(payload: SimplexInput):
     try:
-        # 1. Resolver el problema matemáticamente con PuLP
         result = solve_simplex(payload)
         
-        if result["status"] != "Optimal":
+        if not result or result.get("status") != "Optimal":
             return {
                 "success": False,
-                "status": result["status"],
-                "message": f"No se pudo encontrar una solución óptima. Estado: {result['status']}"
+                "status": result.get("status", "Unknown"),
+                "message": f"No se pudo encontrar una solución óptima."
             }
         
-        # 2. Enviar los datos del problema y la solución matemática a la IA local
-        # Nota: Si no tienes Ollama corriendo en tu PC, el bloque try/except de ia_service capturará el aviso sin tumbar el server.
-        explicacion_ia = ia_service.generate_interpretation(payload, result)
+        # Intentar obtener el análisis de IA, si falla no tumbamos los datos matemáticos
+        try:
+            explicacion_ia = ia_service.generate_interpretation(payload, result)
+        except Exception as ia_err:
+            print(f"⚠️ Alerta: La IA local falló o no está activa: {str(ia_err)}")
+            explicacion_ia = "Análisis de IA no disponible (Verifica si Ollama está encendido)."
             
         return {
             "success": True,
@@ -35,7 +37,9 @@ def solve_simplex_problem(payload: SimplexInput):
                 "objective_value": result["objective_value"],
                 "variables": result["variables"]
             },
-            "analysis": explicacion_ia  # Aquí viaja la interpretación en lenguaje natural
+            "analysis": explicacion_ia
         }
     except Exception as e:
+        # Esto imprimirá el error exacto en tu terminal MINGW64
+        traceback.print_exc()
         raise HTTPException(status_code=400, detail=f"Error al procesar el modelo Simplex: {str(e)}")
